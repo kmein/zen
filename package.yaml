@@ -1,0 +1,17 @@
+name: zen
+version: '0.1.0'
+
+dependencies:
+- base
+- containers
+- optparse-applicative
+- pandoc
+- parallel
+- regex-compat
+- scalpel
+- text
+
+executable:
+  main: zeno.hs
+
+ghc-options: -threaded
