@@ -2,6 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
+import Blessings
+import Blessings.String
 import Control.Parallel.Strategies (parMap, rpar)
 import Data.Foldable (traverse_)
 import Data.Maybe (fromMaybe)
@@ -11,7 +13,7 @@ import Data.Tree (Tree(Node))
 import Options.Applicative
 import System.IO (hPutStrLn, stderr)
 import Text.HTML.Scalpel
-import Text.Pandoc
+import Text.Pandoc hiding (Plain)
 import Text.Regex (mkRegex)
 
 parMapM :: (Applicative f) => (a -> f b) -> [a] -> f [b]
@@ -20,12 +22,24 @@ parMapM f = sequenceA . parMap rpar f
 withZeno :: Scraper Text a -> Scraper Text a
 withZeno = chroot ("div" @: [hasClass "zenoCOMain"])
 
-htmlToMarkdown :: Text -> Text
-htmlToMarkdown text = either (error . show) id $ runPure $ writeMarkdown def =<< readHtml def text
+htmlToMarkdown :: Zenoptions -> Text -> Text
+htmlToMarkdown Zenoptions {..} text =
+  either (error . show) id $
+  runPure $
+  writeMarkdown
+    def
+      { writerVariables = writerVariables def ++ metadata
+      , writerTOCDepth = 5
+      , writerWrapText = WrapNone
+      } =<<
+  readHtml def text
+  where
+    metadata = variable "title" title <> variable "author" author
+    variable name = maybe mempty (pure . (,) name)
 
 walkLinks :: Scraper Text a -> URL -> IO (Tree (URL, a))
 walkLinks page root = do
-  hPutStrLn stderr $ "scraping " <> root
+  hPutStrLn stderr $ "scraping " <> pp (SGR [36] (Plain root))
   taggedSublinks <- scrapeURL root (liftA2 (,) sublinks page)
   case taggedSublinks of
     Nothing -> pure $ Node (root, undefined) []
@@ -37,41 +51,29 @@ sublinks =
   chroots (tagSelector "li") $ unpack . ("http://www.zeno.org" <>) <$> attr "href" (tagSelector "a")
 
 content :: Scraper Text Text
-content =
-  replace "href=\"/" "href=\"http://www.zeno.org/" .
-  replace "href=\"/Literatur/I" "href=\"http://images.zeno.org/Literatur/I/big" <$>
-  withZeno (html anySelector)
+content = replace "href=\"/" "href=\"http://www.zeno.org/" <$> withZeno (html anySelector)
 
-newtype Zenoptions = Zenoptions
-  { rootURL :: String
-  -- , outputDirectory :: FilePath
+data Zenoptions = Zenoptions
+  { url :: String
+  , author :: Maybe String
+  , title :: Maybe String
   }
 
 zenoptions :: Parser Zenoptions
 zenoptions = do
-  rootURL <- strArgument (help "Scraping root URL" <> metavar "URL")
-  -- outputDirectory <-
-  --   strOption (help "Directory to scrape to" <> long "output" <> short 'o' <> metavar "DIRECTORY")
+  url <- strArgument (help "root URL for scraping" <> metavar "URL")
+  author <-
+    optional $
+    strOption (long "author" <> short 'a' <> help "author of the work" <> metavar "STRING")
+  title <-
+    optional $ strOption (long "title" <> short 't' <> help "title of the work" <> metavar "STRING")
   pure Zenoptions {..}
 
--- writeContent :: FilePath -> (Text, Text) -> IO ()
--- writeContent directory (path, text)
---   | Text.null text = createDirectory path'
---   | Text.null path = Text.writeFile (directory </> "index.md") text
---   | otherwise = Text.writeFile (path' <> ".md") text
---   where
---     path' = directory </> Text.unpack path
 main :: IO ()
 main = do
-  Zenoptions {..} <- execParser options
-  links <- walkLinks (htmlToMarkdown <$> content) rootURL
-  -- putStrLn $ drawTree $ fmap show links
-  -- outputDirectoryExists <- doesDirectoryExist outputDirectory
-  -- unless outputDirectoryExists $ createDirectory outputDirectory
-  --traverse_ (writeContent outputDirectory) links
+  options <- execParser options
+  links <- walkLinks (htmlToMarkdown options <$> content) (url options)
+  hPutStrLn stderr $ pp $ "scraping " <> SGR [32] "complete"
   traverse_ (\(_, text) -> Text.putStrLn text >> putChar '\n') links
-  --"http://www.zeno.org/Literatur/M/Trakl,+Georg"
-  --"http://www.zeno.org/Literatur/M/George,+Stefan/Gesamtausgabe+der+Werke/Hymnen,+Pilgerfahrten,+Algabal/Pilgerfahrten"
-  --"http://www.zeno.org/Literatur/M/George,+Stefan/Gesamtausgabe+der+Werke/Hymnen,+Pilgerfahrten,+Algabal"
   where
     options = info (zenoptions <**> helper) (fullDesc <> progDesc "Scrape zeno.org")

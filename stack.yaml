@@ -1,0 +1,6 @@
+resolver: lts-13.7
+packages:
+- location: .
+extra-deps:
+- git: https://cgit.krebsco.de/blessings
+  commit: "d94712a015"
