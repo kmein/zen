@@ -8,13 +8,13 @@ dependencies:
 - bytestring
 - containers
 - optparse-applicative
+- download-curl
 - pandoc
 - regex-compat
 - scalpel
 - temporary
 - text
 - text-regex-replace
-- regex-compat
 
 executable:
   main: zeno.hs
