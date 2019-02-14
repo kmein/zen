@@ -2,15 +2,19 @@ name: zen
 version: '0.1.0'
 
 dependencies:
+- async
 - base
+- blessings
+- bytestring
 - containers
 - optparse-applicative
 - pandoc
-- parallel
-- blessings
 - regex-compat
 - scalpel
+- temporary
 - text
+- text-regex-replace
+- regex-compat
 
 executable:
   main: zeno.hs
