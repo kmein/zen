@@ -28,16 +28,12 @@ import Text.Pandoc.App
 
 data Mode
   = GutenbergDE
-  | Augustana
   | Zeno
-  | LatinLibrary
   deriving (Show)
 
 root :: Mode -> URL
 root Zeno = "http://www.zeno.org"
 root GutenbergDE = "http://gutenberg.spiegel.de"
-root Augustana = "https://www.hs-augsburg.de/~harsch"
-root LatinLibrary = "http://www.thelatinlibrary.com"
 
 --
 -- helpers
@@ -84,10 +80,6 @@ extractLinks mode url = do
           attrs
             "href"
             ("div" @: [hasClass "zenoTRNavBottom"] // "ul" // "li" // "a")
-    sublinks LatinLibrary =
-      map ((root LatinLibrary <> "/") <>) . concat <$>
-      chroots latinLibrary (attrs "href" ("tbody" // "a"))
-    sublinks Augustana = chroot augustanaTable $ attrs "href" "a"
 
 --
 -- metadata
@@ -107,8 +99,6 @@ metadataWith name extract mode = do
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
   where
-    extract LatinLibrary = scrapeURL url (text "h1")
-    extract Augustana = Nothing <$ logInfo' "Augustana not yet supported"
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h1" <|> text "h3")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -120,8 +110,6 @@ extractAuthor mode url = metadataWith "author" extract mode
 extractTitle :: Mode -> URL -> IO (Maybe Text)
 extractTitle mode url = metadataWith "title" extract mode
   where
-    extract LatinLibrary = Nothing <$ logInfo' "Single works from thelatinlibrary.com not yet supported"
-    extract Augustana = Nothing <$ logInfo' "Augustana not yet supported"
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h2")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -133,8 +121,6 @@ extractTitle mode url = metadataWith "title" extract mode
 extractSubtitle :: Mode -> URL -> IO (Maybe Text)
 extractSubtitle mode url = metadataWith "subtitle" extract mode
   where
-    extract LatinLibrary = Nothing <$ logInfo' "Single works from thelatinlibrary.com not yet supported"
-    extract Augustana = Nothing <$ logInfo' "Augustana not yet supported"
     extract Zeno = pure Nothing
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -152,8 +138,6 @@ extractBookCover mode url = do
   logInfo mode "extracting book cover"
   extract mode
   where
-    extract LatinLibrary = pure Nothing
-    extract Augustana = Nothing <$ logInfo' "Augustana not yet supported"
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
@@ -189,8 +173,6 @@ extractHTML mode url = do
   logInfo mode $ "extracting text from " <> SGR [36] (Plain url)
   extract mode
   where
-    extract Augustana = mempty <$ logInfo' "Augustana not yet supported"
-    extract LatinLibrary = maybe mempty id <$> scrapeURL url (innerHTML "body")
     extract GutenbergDE =
       maybe mempty (\(base, text) -> Text.replace "src=\"" ("src=\"" <> base <> "/") text) <$>
       scrapeURL url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
@@ -287,8 +269,6 @@ main = do
   let mode
         | url `startsWith` root GutenbergDE = GutenbergDE
         | url `startsWith` root Zeno = Zeno
-        | url `startsWith` root Augustana = Augustana
-        | url `startsWith` root LatinLibrary = LatinLibrary
         | otherwise = error $ pp $ SGR [31] "site not supported"
         where
           xs `startsWith` ys = take (length ys) xs == ys
