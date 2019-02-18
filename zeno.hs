@@ -210,24 +210,30 @@ extractMetadata mode url = do
   Metadata <$> wait authorP <*> wait titleP <*> wait subtitleP <*> wait coverP
 
 generateEPUB :: Metadata -> Zenoptions -> Text -> IO ()
-generateEPUB Metadata{..} Zenoptions {..} text = do
-  logInfo' $ "generating " <> Plain outputType <> " to " <> SGR [33] (Plain outputFile)
-  htmlFile <- writeSystemTempFile "zeno.html" (Text.unpack text)
+generateEPUB Metadata {..} Zenoptions {..} text = do
+  logInfo' $
+    "generating " <> Plain outputType <> " to " <> SGR [33] (Plain outputFile)
+  (htmlFile, cssFile) <-
+    writeSystemTempFile "zeno.html" (Text.unpack text) `concurrently`
+    writeSystemTempFile "zeno.css" zenoCSS
   coverFile <-
     case cover of
       Nothing -> pure Nothing
       Just bytes ->
         let path =
-              Text.unpack $ "/tmp/" <> fromMaybe mempty author <> fromMaybe mempty title <> ".jpg"
+              Text.unpack $
+              "/tmp/" <> fromMaybe mempty author <> fromMaybe mempty title <>
+              ".jpg"
          in Just path <$ ByteString.writeFile path bytes
-  cssFile <- writeSystemTempFile "zeno.css" zenoCSS
   convertWithOpts
     defaultOpts
       { optReader = Just "html"
       , optWriter = Just outputType
       , optMetadata =
-          optMetadata defaultOpts <> [("lang", "de")] <> variable "author" author <>
-          variable "title" title' <> variable "subtitle" subtitle
+          optMetadata defaultOpts <> [("lang", "de")] <>
+          variable "author" author <>
+          variable "title" title' <>
+          variable "subtitle" subtitle
       , optOutputFile = Just outputFile
       , optSelfContained = True
       , optCss = [cssFile]
