@@ -1,0 +1,22 @@
+name: zen
+version: '0.1.0'
+
+dependencies:
+- async
+- base
+- blessings
+- bytestring
+- containers
+- optparse-applicative
+- download-curl
+- pandoc
+- regex-compat
+- scalpel
+- temporary
+- text
+- text-regex-replace
+
+executable:
+  main: zeno.hs
+
+ghc-options: -threaded
