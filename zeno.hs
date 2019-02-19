@@ -1,3 +1,5 @@
+{-# LANGUAGE Strict #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -90,6 +92,32 @@ metadataWith name extract mode = do
     case meta of
       Nothing -> logInfo mode $ name' <> " not found"
       Just value -> logInfo mode $ name' <> " found: " <> SGR [33] (Plain value)
+
+extractSource :: Mode -> URL -> IO (Maybe Text)
+extractSource mode url = metadataWith "source" extract mode
+  where
+    extract KeinVerlag = pure Nothing
+    extract Zeno = scrapeURL url (text ("div" @: [hasClass "zenoCOFooterLineRight"]))
+    extract GutenbergDE =
+      scrapeURL url $
+      chroot ("div" @: ["id" @= "metadata"] // "table") $ do
+        let row = texts ("tr" // "td")
+        ["type", bookType] <- row
+        ["booktitle", bookBooktitle] <- row
+        ["author", bookAuthor] <- row
+        ["year", bookYear] <- row
+        ["publisher", bookPublisher] <- row
+        ["address", bookAddress] <- row
+        ["title", bookTitle] <- row
+        ["pages", bookPages] <- row
+        ["created", bookCreated] <- row
+        ["sender", bookSender] <- row
+        ["firstpub", bookFirstpub] <- row
+        pure $
+          bookAuthor <> ": " <> bookBooktitle <> ". " <> bookPublisher <> ", " <> bookAddress <>
+          bookYear <>
+          ", S. " <>
+          bookPages
 
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
@@ -196,6 +224,7 @@ data Metadata = Metadata
   { author :: Maybe Text
   , title :: Maybe Text
   , subtitle :: Maybe Text
+  , source :: Maybe Text
   , cover :: Maybe ByteString
   }
 
@@ -205,6 +234,7 @@ extractMetadata mode url =
     author <- Concurrently (extractAuthor mode url)
     title <- Concurrently (extractTitle mode url)
     subtitle <- Concurrently (extractSubtitle mode url)
+    source <- Concurrently (extractSource mode url)
     cover <- Concurrently (downloadBookCover =<< extractBookCover mode url)
     pure Metadata {..}
 
@@ -230,7 +260,8 @@ generateEPUB Metadata {..} Zenoptions {..} text = do
       , optMetadata =
           optMetadata defaultOpts <> [("lang", "de")] <> variable "author" author <>
           variable "title" title' <>
-          variable "subtitle" subtitle
+          variable "subtitle" subtitle <>
+          variable "date" source
       , optOutputFile = Just outputFile
       , optSelfContained = True
       , optCss = [cssFile]
