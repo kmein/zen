@@ -29,16 +29,19 @@ import Text.Pandoc.App
 data Mode
   = GutenbergDE
   | Zeno
+  | KeinVerlag
   deriving (Show)
 
 root :: Mode -> URL
 root Zeno = "http://www.zeno.org"
 root GutenbergDE = "http://gutenberg.spiegel.de"
+root KeinVerlag = "https://www.keinverlag.de"
 
 --
 -- helpers
 --
 logInfo' = hPutStrLn stderr . pp
+
 logInfo mode = logInfo' . (SGR [1] (Plain (show mode)) <>) . (" " <>)
 
 gutenb :: Selector
@@ -49,12 +52,6 @@ zenoCOMain = "div" @: [hasClass "zenoCOMain"]
 
 zenoCOHeader :: Selector
 zenoCOHeader = "div" @: [hasClass "zenoCOHeader"]
-
-augustanaTable :: Selector
-augustanaTable = "table"
-
-latinLibrary :: Selector
-latinLibrary = "div" @: [hasClass "work"]
 
 extractTitlePageLink :: URL -> IO (Maybe URL)
 extractTitlePageLink url = scrapeURL url $ (root GutenbergDE <>) <$> chroot gutenb (attr "href" "a")
@@ -70,16 +67,13 @@ extractLinks mode url = do
     Nothing -> pure $ Node url []
     Just links -> Node url <$> mapConcurrently (extractLinks mode) links
   where
-    sublinks GutenbergDE =
-      map (root GutenbergDE <>) <$> chroot gutenb (attrs "href" "a")
-    sublinks Zeno =
-      map (root Zeno <>) <$> chroot zenoCOMain (liLinks <|> pLinks)
+    sublinks KeinVerlag =
+      map ((root KeinVerlag <> "/") <>) <$> attrs "href" ("ul" @: [hasClass "textliste"] // "a")
+    sublinks GutenbergDE = map (root GutenbergDE <>) <$> chroot gutenb (attrs "href" "a")
+    sublinks Zeno = map (root Zeno <>) <$> chroot zenoCOMain (liLinks <|> pLinks)
       where
         pLinks = attrs "href" ("a" @: [hasClass "zenoTXLinkInt"])
-        liLinks =
-          attrs
-            "href"
-            ("div" @: [hasClass "zenoTRNavBottom"] // "ul" // "li" // "a")
+        liLinks = attrs "href" ("div" @: [hasClass "zenoTRNavBottom"] // "ul" // "li" // "a")
 
 --
 -- metadata
@@ -92,43 +86,40 @@ metadataWith name extract mode = do
   meta <$
     case meta of
       Nothing -> logInfo mode $ name' <> " not found"
-      Just value ->
-        logInfo mode $
-        name' <> " found: " <> SGR [33] (Plain $ Text.unpack value)
+      Just value -> logInfo mode $ name' <> " found: " <> SGR [33] (Plain $ Text.unpack value)
 
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
   where
+    extract KeinVerlag = pure Nothing
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h1" <|> text "h3")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' ->
-          scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "author"]))
+        Just url' -> scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "author"]))
 
 extractTitle :: Mode -> URL -> IO (Maybe Text)
 extractTitle mode url = metadataWith "title" extract mode
   where
+    extract KeinVerlag = pure Nothing
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h2")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' ->
-          scrapeURL url' (chroot gutenb $ text ("h2" @: [hasClass "title"]))
+        Just url' -> scrapeURL url' (chroot gutenb $ text ("h2" @: [hasClass "title"]))
 
 extractSubtitle :: Mode -> URL -> IO (Maybe Text)
 extractSubtitle mode url = metadataWith "subtitle" extract mode
   where
+    extract KeinVerlag = pure Nothing
     extract Zeno = pure Nothing
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' ->
-          scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "subtitle"]))
-
+        Just url' -> scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "subtitle"]))
 
 --
 -- cover
@@ -138,13 +129,15 @@ extractBookCover mode url = do
   logInfo mode "extracting book cover"
   extract mode
   where
+    extract KeinVerlag = pure Nothing
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' -> scrapeURL url' $ do
-          base <- attr "href" "base"
-          chroot gutenb $ (base <>) <$> attr "src" ("p" @: [hasClass "figure"] // "img")
+        Just url' ->
+          scrapeURL url' $ do
+            base <- attr "href" "base"
+            chroot gutenb $ (base <>) <$> attr "src" ("p" @: [hasClass "figure"] // "img")
     extract Zeno = scrapeURL url (bookCoverImage <|> authorCoverImage)
       where
         authorCoverImage =
@@ -173,6 +166,9 @@ extractHTML mode url = do
   logInfo mode $ "extracting text from " <> SGR [36] (Plain url)
   extract mode
   where
+    extract KeinVerlag =
+      maybe mempty id <$>
+      scrapeURL url (innerHTML ("div" @: ["id" @= "hauptbereich"]))
     extract GutenbergDE =
       maybe mempty (\(base, text) -> Text.replace "src=\"" ("src=\"" <> base <> "/") text) <$>
       scrapeURL url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
@@ -211,8 +207,7 @@ extractMetadata mode url = do
 
 generateEPUB :: Metadata -> Zenoptions -> Text -> IO ()
 generateEPUB Metadata {..} Zenoptions {..} text = do
-  logInfo' $
-    "generating " <> Plain outputType <> " to " <> SGR [33] (Plain outputFile)
+  logInfo' $ "generating " <> Plain outputType <> " to " <> SGR [33] (Plain outputFile)
   (htmlFile, cssFile) <-
     writeSystemTempFile "zeno.html" (Text.unpack text) `concurrently`
     writeSystemTempFile "zeno.css" zenoCSS
@@ -221,17 +216,14 @@ generateEPUB Metadata {..} Zenoptions {..} text = do
       Nothing -> pure Nothing
       Just bytes ->
         let path =
-              Text.unpack $
-              "/tmp/" <> fromMaybe mempty author <> fromMaybe mempty title <>
-              ".jpg"
+              Text.unpack $ "/tmp/" <> fromMaybe mempty author <> fromMaybe mempty title <> ".jpg"
          in Just path <$ ByteString.writeFile path bytes
   convertWithOpts
     defaultOpts
       { optReader = Just "html"
       , optWriter = Just outputType
       , optMetadata =
-          optMetadata defaultOpts <> [("lang", "de")] <>
-          variable "author" author <>
+          optMetadata defaultOpts <> [("lang", "de")] <> variable "author" author <>
           variable "title" title' <>
           variable "subtitle" subtitle
       , optOutputFile = Just outputFile
@@ -256,13 +248,10 @@ data Zenoptions = Zenoptions
 zenoptions :: Parser Zenoptions
 zenoptions = do
   url <- strArgument (help "root URL for scraping" <> metavar "URL")
-  outputFile <-
-    strOption
-      (long "output" <> short 'o' <> help "output file name" <> metavar "PATH")
+  outputFile <- strOption (long "output" <> short 'o' <> help "output file name" <> metavar "PATH")
   outputType <-
     strOption
-      (long "type" <> short 't' <>
-       help "output file type (from pandoc --list-output-formats)" <>
+      (long "type" <> short 't' <> help "output file type (from pandoc --list-output-formats)" <>
        metavar "TYPE" <>
        value "epub2" <>
        showDefault)
@@ -275,15 +264,12 @@ main = do
   let mode
         | url `startsWith` root GutenbergDE = GutenbergDE
         | url `startsWith` root Zeno = Zeno
+        | url `startsWith` root KeinVerlag = KeinVerlag
         | otherwise = error $ pp $ SGR [31] "site not supported"
         where
           xs `startsWith` ys = take (length ys) xs == ys
   (metadata, pageContents) <-
-    extractMetadata mode url `concurrently`
-    (linksToHTML mode =<< extractLinks mode url)
+    extractMetadata mode url `concurrently` (linksToHTML mode =<< extractLinks mode url)
   generateEPUB metadata options (Text.unlines pageContents)
   where
-    options =
-      info
-        (zenoptions <**> helper)
-        (fullDesc <> progDesc "Download public domain ebooks")
+    options = info (zenoptions <**> helper) (fullDesc <> progDesc "Download public domain ebooks")
