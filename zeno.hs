@@ -31,13 +31,11 @@ import Text.Pandoc.App
 data Mode
   = GutenbergDE
   | Zeno
-  | KeinVerlag
   deriving (Show)
 
 root :: Mode -> URL
 root Zeno = "http://www.zeno.org"
 root GutenbergDE = "http://gutenberg.spiegel.de"
-root KeinVerlag = "https://www.keinverlag.de"
 
 --
 -- helpers
@@ -72,8 +70,6 @@ extractLinks mode url = do
     Nothing -> pure $ Node url []
     Just links -> Node url <$> mapConcurrently (extractLinks mode) links
   where
-    sublinks KeinVerlag =
-      map ((root KeinVerlag <> "/") <>) <$> attrs "href" ("ul" @: [hasClass "textliste"] // "a")
     sublinks GutenbergDE = map (root GutenbergDE <>) <$> chroot gutenb (attrs "href" "a")
     sublinks Zeno = map (root Zeno <>) <$> chroot zenoCOMain (liLinks <|> pLinks)
       where
@@ -96,7 +92,6 @@ metadataWith name extract mode = do
 extractSource :: Mode -> URL -> IO (Maybe Text)
 extractSource mode url = metadataWith "source" extract mode
   where
-    extract KeinVerlag = pure Nothing
     extract Zeno = scrapeURL url (text ("div" @: [hasClass "zenoCOFooterLineRight"]))
     extract GutenbergDE =
       scrapeURL url $
@@ -122,7 +117,6 @@ extractSource mode url = metadataWith "source" extract mode
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
   where
-    extract KeinVerlag = pure Nothing
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h1" <|> text "h3")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -133,7 +127,6 @@ extractAuthor mode url = metadataWith "author" extract mode
 extractTitle :: Mode -> URL -> IO (Maybe Text)
 extractTitle mode url = metadataWith "title" extract mode
   where
-    extract KeinVerlag = pure Nothing
     extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h2")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -144,7 +137,6 @@ extractTitle mode url = metadataWith "title" extract mode
 extractSubtitle :: Mode -> URL -> IO (Maybe Text)
 extractSubtitle mode url = metadataWith "subtitle" extract mode
   where
-    extract KeinVerlag = pure Nothing
     extract Zeno = pure Nothing
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
@@ -160,7 +152,6 @@ extractBookCover mode url = do
   logInfo mode "extracting book cover"
   extract mode
   where
-    extract KeinVerlag = pure Nothing
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
@@ -197,8 +188,6 @@ extractHTML mode url = do
   logInfo mode $ "extracting text from " <> blessURL url
   extract mode
   where
-    extract KeinVerlag =
-      maybe mempty id <$> scrapeURL url (innerHTML ("div" @: ["id" @= "hauptbereich"]))
     extract GutenbergDE =
       maybe mempty (\(base, text) -> Text.replace "src=\"" ("src=\"" <> base <> "/") text) <$>
       scrapeURL url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
@@ -285,7 +274,6 @@ guessMode :: URL -> Maybe Mode
 guessMode url
   | url `startsWith` root GutenbergDE = Just GutenbergDE
   | url `startsWith` root Zeno = Just Zeno
-  | url `startsWith` root KeinVerlag = Just KeinVerlag
   | otherwise = Nothing
   where
     xs `startsWith` ys = take (length ys) xs == ys
