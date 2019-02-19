@@ -7,10 +7,11 @@ dependencies:
 - blessings
 - bytestring
 - containers
-- optparse-applicative
 - download-curl
+- optparse-applicative
 - pandoc
 - regex-compat
+- say
 - scalpel
 - temporary
 - text

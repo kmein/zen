@@ -3,7 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 
 import Blessings
-import Blessings.String
+import Blessings.Text
 import Control.Concurrent.Async
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as ByteString
@@ -20,8 +20,8 @@ import qualified Data.Text.IO as Text
 import Data.Tree
 import Network.Curl.Download.Lazy
 import Options.Applicative
+import Say (sayErr)
 import System.Exit
-import System.IO
 import System.IO.Temp
 import Text.HTML.Scalpel
 import Text.Pandoc.App
@@ -40,9 +40,12 @@ root KeinVerlag = "https://www.keinverlag.de"
 --
 -- helpers
 --
-logInfo' = hPutStrLn stderr . pp
+logInfo' = sayErr . pp
 
-logInfo mode = logInfo' . (SGR [1] (Plain (show mode)) <>) . (" " <>)
+logInfo mode = logInfo' . (SGR [1] (Plain (Text.pack (show mode))) <>) . (" " <>)
+
+blessURL :: URL -> Blessings Text
+blessURL = SGR [36] . Plain . Text.pack
 
 gutenb :: Selector
 gutenb = "div" @: ["id" @= "gutenb"]
@@ -61,7 +64,7 @@ extractTitlePageLink url = scrapeURL url $ (root GutenbergDE <>) <$> chroot gute
 --
 extractLinks :: Mode -> URL -> IO (Tree URL)
 extractLinks mode url = do
-  logInfo mode $ "extracting links from " <> SGR [36] (Plain url)
+  logInfo mode $ "extracting links from " <> blessURL url
   maybeSublinks <- scrapeURL url (sublinks mode)
   case maybeSublinks of
     Nothing -> pure $ Node url []
@@ -80,13 +83,13 @@ extractLinks mode url = do
 --
 metadataWith :: String -> (Mode -> IO (Maybe Text)) -> Mode -> IO (Maybe Text)
 metadataWith name extract mode = do
-  let name' = Plain name
+  let name' = Plain (Text.pack name)
   logInfo mode $ "extracting " <> name' <> " information"
   meta <- extract mode
   meta <$
     case meta of
       Nothing -> logInfo mode $ name' <> " not found"
-      Just value -> logInfo mode $ name' <> " found: " <> SGR [33] (Plain $ Text.unpack value)
+      Just value -> logInfo mode $ name' <> " found: " <> SGR [33] (Plain value)
 
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
@@ -155,7 +158,7 @@ extractBookCover mode url = do
 downloadBookCover :: Maybe URL -> IO (Maybe ByteString)
 downloadBookCover Nothing = Nothing <$ logInfo' "book cover not found"
 downloadBookCover (Just url) = do
-  logInfo' $ "downloading " <> SGR [36] (Plain url)
+  logInfo' $ "downloading " <> blessURL url
   either (const Nothing) Just <$> openLazyURI url
 
 --
@@ -163,12 +166,11 @@ downloadBookCover (Just url) = do
 --
 extractHTML :: Mode -> URL -> IO Text
 extractHTML mode url = do
-  logInfo mode $ "extracting text from " <> SGR [36] (Plain url)
+  logInfo mode $ "extracting text from " <> blessURL url
   extract mode
   where
     extract KeinVerlag =
-      maybe mempty id <$>
-      scrapeURL url (innerHTML ("div" @: ["id" @= "hauptbereich"]))
+      maybe mempty id <$> scrapeURL url (innerHTML ("div" @: ["id" @= "hauptbereich"]))
     extract GutenbergDE =
       maybe mempty (\(base, text) -> Text.replace "src=\"" ("src=\"" <> base <> "/") text) <$>
       scrapeURL url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
@@ -198,16 +200,19 @@ data Metadata = Metadata
   }
 
 extractMetadata :: Mode -> URL -> IO Metadata
-extractMetadata mode url = do
-  coverP <- async $ downloadBookCover =<< extractBookCover mode url
-  authorP <- async $ extractAuthor mode url
-  titleP <- async $ extractTitle mode url
-  subtitleP <- async $ extractSubtitle mode url
-  Metadata <$> wait authorP <*> wait titleP <*> wait subtitleP <*> wait coverP
+extractMetadata mode url =
+  runConcurrently $ do
+    author <- Concurrently (extractAuthor mode url)
+    title <- Concurrently (extractTitle mode url)
+    subtitle <- Concurrently (extractSubtitle mode url)
+    cover <- Concurrently (downloadBookCover =<< extractBookCover mode url)
+    pure Metadata {..}
 
 generateEPUB :: Metadata -> Zenoptions -> Text -> IO ()
 generateEPUB Metadata {..} Zenoptions {..} text = do
-  logInfo' $ "generating " <> Plain outputType <> " to " <> SGR [33] (Plain outputFile)
+  logInfo' $
+    "generating " <> Plain (Text.pack outputType) <> " to " <>
+    SGR [33] (Plain (Text.pack outputFile))
   (htmlFile, cssFile) <-
     writeSystemTempFile "zeno.html" (Text.unpack text) `concurrently`
     writeSystemTempFile "zeno.css" zenoCSS
@@ -245,6 +250,15 @@ data Zenoptions = Zenoptions
   , outputType :: String
   }
 
+guessMode :: URL -> Maybe Mode
+guessMode url
+  | url `startsWith` root GutenbergDE = Just GutenbergDE
+  | url `startsWith` root Zeno = Just Zeno
+  | url `startsWith` root KeinVerlag = Just KeinVerlag
+  | otherwise = Nothing
+  where
+    xs `startsWith` ys = take (length ys) xs == ys
+
 zenoptions :: Parser Zenoptions
 zenoptions = do
   url <- strArgument (help "root URL for scraping" <> metavar "URL")
@@ -259,17 +273,12 @@ zenoptions = do
 
 main :: IO ()
 main = do
-  hSetBuffering stderr LineBuffering
   options@Zenoptions {..} <- execParser options
-  let mode
-        | url `startsWith` root GutenbergDE = GutenbergDE
-        | url `startsWith` root Zeno = Zeno
-        | url `startsWith` root KeinVerlag = KeinVerlag
-        | otherwise = error $ pp $ SGR [31] "site not supported"
-        where
-          xs `startsWith` ys = take (length ys) xs == ys
-  (metadata, pageContents) <-
-    extractMetadata mode url `concurrently` (linksToHTML mode =<< extractLinks mode url)
-  generateEPUB metadata options (Text.unlines pageContents)
+  case guessMode url of
+    Nothing -> sayErr $ pp $ SGR [31] $ "Site " <> blessURL url <> " not supported."
+    Just mode -> do
+      (metadata, pageContents) <-
+        extractMetadata mode url `concurrently` (linksToHTML mode =<< extractLinks mode url)
+      generateEPUB metadata options (Text.unlines pageContents)
   where
     options = info (zenoptions <**> helper) (fullDesc <> progDesc "Download public domain ebooks")
