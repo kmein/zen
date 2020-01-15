@@ -1,9 +1,10 @@
 # zen
 Download public domain ebooks from <http://zeno.org> and <http://gutenberg.spiegel.de>.
 
+**NOTE.** Projekt Gutenberg is currently not supported since the project page has been moved and restructured. Sorry for any inconvenience.
+
 ## Build
-- nix: `cabal2nix --shell . > shell.nix && nix-build shell.nix`
-- stack: `stack build`
+`nix-build`
 
 ## Usage
 ```
