@@ -71,7 +71,7 @@ extractLinks mode url = do
     Just links -> Node url <$> mapConcurrently (extractLinks mode) links
   where
     sublinks GutenbergDE = map (root GutenbergDE <>) <$> chroot gutenb (attrs "href" "a")
-    sublinks Zeno = map (root Zeno <>) <$> chroot zenoCOMain (liLinks <|> pLinks)
+    sublinks Zeno = map (root Zeno <>) . filter ("/" `isPrefixOf`) <$> chroot zenoCOMain (liLinks <|> pLinks)
       where
         pLinks = attrs "href" ("a" @: [hasClass "zenoTXLinkInt"])
         liLinks = attrs "href" ("div" @: [hasClass "zenoTRNavBottom"] // "ul" // "li" // "a")
