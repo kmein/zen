@@ -3,22 +3,21 @@
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
 
 import Blessings
 import Blessings.Text
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
+import Control.Concurrent.MSem
+import Control.Exception (handle, SomeException)
 import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy as ByteString
-import qualified Data.ByteString.Lazy.Char8 as ByteStringChar
 import Data.Foldable (for_, traverse_)
 import Data.List
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
-import qualified Data.Set as Set
 import Data.Text (Text)
-import qualified Data.Text as Text
-import qualified Data.Text.ICU.Replace as ICU
-import qualified Data.Text.IO as Text
+import Data.Traversable
 import Data.Tree
 import Network.Curl.Download.Lazy
 import Options.Applicative
@@ -27,6 +26,25 @@ import System.Exit
 import System.IO.Temp
 import Text.HTML.Scalpel
 import Text.Pandoc.App
+import qualified Data.ByteString.Lazy as ByteString
+import qualified Data.ByteString.Lazy.Char8 as ByteStringChar
+import qualified Data.Set as Set
+import qualified Data.Text as Text
+import qualified Data.Text.ICU.Replace as ICU
+import qualified Data.Text.IO as Text
+
+scrapeURL' url scraper =
+  handle @SomeException
+    (\ex -> do
+      sayErr $ Text.pack $ show ex
+      threadDelay (10 * 1000 * 1000)
+      scrapeURL' url scraper)
+    (scrapeURL url scraper)
+
+mapPool :: Traversable t => Int -> (a -> IO b) -> t a -> IO (t b)
+mapPool max f xs = do
+    sem <- new max
+    mapConcurrently (with sem . f) xs
 
 data Mode
   = GutenbergDE
@@ -57,18 +75,18 @@ zenoCOHeader :: Selector
 zenoCOHeader = "div" @: [hasClass "zenoCOHeader"]
 
 extractTitlePageLink :: URL -> IO (Maybe URL)
-extractTitlePageLink url = scrapeURL url $ (root GutenbergDE <>) <$> chroot gutenb (attr "href" "a")
+extractTitlePageLink url = scrapeURL' url $ (root GutenbergDE <>) <$> chroot gutenb (attr "href" "a")
 
 --
 -- links
 --
-extractLinks :: Mode -> URL -> IO (Tree URL)
-extractLinks mode url = do
+extractLinks :: Int -> Mode -> URL -> IO (Tree URL)
+extractLinks threads mode url = do
   logInfo mode $ "extracting links from " <> blessURL url
-  maybeSublinks <- scrapeURL url (sublinks mode)
+  maybeSublinks <- scrapeURL' url (sublinks mode)
   case maybeSublinks of
     Nothing -> pure $ Node url []
-    Just links -> Node url <$> mapConcurrently (extractLinks mode) links
+    Just links -> Node url <$> mapPool threads (extractLinks threads mode) links
   where
     sublinks GutenbergDE = map (root GutenbergDE <>) <$> chroot gutenb (attrs "href" "a")
     sublinks Zeno = map (root Zeno <>) . filter ("/" `isPrefixOf`) <$> chroot zenoCOMain (liLinks <|> pLinks)
@@ -92,9 +110,9 @@ metadataWith name extract mode = do
 extractSource :: Mode -> URL -> IO (Maybe Text)
 extractSource mode url = metadataWith "source" extract mode
   where
-    extract Zeno = scrapeURL url (text ("div" @: [hasClass "zenoCOFooterLineRight"]))
+    extract Zeno = scrapeURL' url (text ("div" @: [hasClass "zenoCOFooterLineRight"]))
     extract GutenbergDE =
-      scrapeURL url $
+      scrapeURL' url $
       chroot ("div" @: ["id" @= "metadata"] // "table") $ do
         let row = texts ("tr" // "td")
         ["type", bookType] <- row
@@ -117,22 +135,22 @@ extractSource mode url = metadataWith "source" extract mode
 extractAuthor :: Mode -> URL -> IO (Maybe Text)
 extractAuthor mode url = metadataWith "author" extract mode
   where
-    extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h1" <|> text "h3")
+    extract Zeno = scrapeURL' url (chroot zenoCOMain $ text "h1" <|> text "h3")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' -> scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "author"]))
+        Just url' -> scrapeURL' url' (chroot gutenb $ text ("h3" @: [hasClass "author"]))
 
 extractTitle :: Mode -> URL -> IO (Maybe Text)
 extractTitle mode url = metadataWith "title" extract mode
   where
-    extract Zeno = scrapeURL url (chroot zenoCOMain $ text "h2")
+    extract Zeno = scrapeURL' url (chroot zenoCOMain $ text "h2")
     extract GutenbergDE = do
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' -> scrapeURL url' (chroot gutenb $ text ("h2" @: [hasClass "title"]))
+        Just url' -> scrapeURL' url' (chroot gutenb $ text ("h2" @: [hasClass "title"]))
 
 extractSubtitle :: Mode -> URL -> IO (Maybe Text)
 extractSubtitle mode url = metadataWith "subtitle" extract mode
@@ -142,7 +160,7 @@ extractSubtitle mode url = metadataWith "subtitle" extract mode
       titlePage <- extractTitlePageLink url
       case titlePage of
         Nothing -> pure Nothing
-        Just url' -> scrapeURL url' (chroot gutenb $ text ("h3" @: [hasClass "subtitle"]))
+        Just url' -> scrapeURL' url' (chroot gutenb $ text ("h3" @: [hasClass "subtitle"]))
 
 --
 -- cover
@@ -157,10 +175,10 @@ extractBookCover mode url = do
       case titlePage of
         Nothing -> pure Nothing
         Just url' ->
-          scrapeURL url' $ do
+          scrapeURL' url' $ do
             base <- attr "href" "base"
             chroot gutenb $ (base <>) <$> attr "src" ("p" @: [hasClass "figure"] // "img")
-    extract Zeno = scrapeURL url (bookCoverImage <|> authorCoverImage)
+    extract Zeno = scrapeURL' url (bookCoverImage <|> authorCoverImage)
       where
         authorCoverImage =
           chroot zenoCOMain $
@@ -190,14 +208,14 @@ extractHTML mode url = do
   where
     extract GutenbergDE =
       maybe mempty (\(base, text) -> Text.replace "src=\"" ("src=\"" <> base <> "/") text) <$>
-      scrapeURL url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
+      scrapeURL' url ((,) <$> attr "href" "base" <*> innerHTML gutenb)
     extract Zeno =
       maybe
         mempty
         (ICU.replaceAll "<div class=\"zenoTRNavBottom\">.*</div>" "lorem ipsum" .
          Text.replace "Amazon.de Widgets" "" .
          Text.replace "=\"/" ("=\"" <> Text.pack (root Zeno) <> "/")) <$>
-      scrapeURL url (innerHTML zenoCOMain)
+      scrapeURL' url (innerHTML zenoCOMain)
 
 linksToHTML :: Mode -> Tree URL -> IO [Text]
 linksToHTML mode = mapConcurrently (extractHTML mode) . nub . flatten
@@ -268,6 +286,7 @@ data Zenoptions = Zenoptions
   { url :: URL
   , outputFile :: FilePath
   , outputType :: String
+  , threads :: Int
   }
 
 guessMode :: URL -> Maybe Mode
@@ -282,6 +301,7 @@ zenoptions :: Parser Zenoptions
 zenoptions = do
   url <- strArgument (help "root URL for scraping" <> metavar "URL")
   outputFile <- strOption (long "output" <> short 'o' <> help "output file name" <> metavar "PATH")
+  threads <- option auto (long "threads" <> short 't' <> help "maximum number of threads" <> metavar "N" <> value 5)
   outputType <-
     strOption
       (long "type" <> short 't' <> help "output file type (from pandoc --list-output-formats)" <>
@@ -297,7 +317,7 @@ main = do
     Nothing -> sayErr $ pp $ SGR [31] $ "Site " <> blessURL url <> " not supported."
     Just mode -> do
       (metadata, pageContents) <-
-        extractMetadata mode url `concurrently` (linksToHTML mode =<< extractLinks mode url)
+        extractMetadata mode url `concurrently` (linksToHTML mode =<< extractLinks threads mode url)
       generateEPUB metadata options (Text.unlines pageContents)
   where
     options = info (zenoptions <**> helper) (fullDesc <> progDesc "Download public domain ebooks")
