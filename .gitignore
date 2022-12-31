@@ -5,3 +5,4 @@ dist-newstyle/
 shell.nix
 result
 *.epub
+*.html
